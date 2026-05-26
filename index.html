@@ -339,7 +339,11 @@ var App = {
   state: "idle",          // idle | scanning | offer | recording | processing | done
   current: null,          // 현재 인식된 태스크 offer
   recognition: null,
-  listening: false
+  listening: false,
+  speaking: false,        // TTS 발화 중 여부
+  sttSupported: false,    // STT 지원 브라우저 여부
+  sttRunning: false,      // STT 실행 중 여부
+  sttHeard: ""            // 마지막으로 알아들은 말
 };
 
 /* ---- DOM refs ---- */
@@ -485,57 +489,140 @@ function captureFrame() {
    4. 음성 출력 (TTS)
    ============================================================ */
 function speak(text, onEnd) {
-  if (!("speechSynthesis" in window)) { if (onEnd) onEnd(); return; }
+  if (!("speechSynthesis" in window)) {
+    App.speaking = false;
+    if (onEnd) onEnd();
+    return;
+  }
   window.speechSynthesis.cancel();
   var u = new SpeechSynthesisUtterance(text);
   u.lang = "ko-KR";
   u.rate = 1.05;
-  if (onEnd) u.onend = onEnd;
+  App.speaking = true;
+  var done = false;
+  function finish() {
+    if (done) return;
+    done = true;
+    App.speaking = false;
+    if (onEnd) onEnd();
+  }
+  u.onend = finish;
+  u.onerror = finish;
+  // 일부 모바일 브라우저에서 onend 가 누락될 수 있어 길이 기반 보정 타이머
+  var fallbackMs = Math.min(1500 + text.length * 90, 9000);
+  setTimeout(finish, fallbackMs);
   window.speechSynthesis.speak(u);
 }
 
 /* ============================================================
    5. 음성 인식 (STT) — "좋아" 류 / "아니" 류 듣기
    ============================================================ */
-var YES = ["좋아", "그래", "응", "오케이", "오케", "네", "예", "시작", "콜", "할게", "해줘"];
-var NO  = ["아니", "싫어", "안해", "패스", "나중", "취소", "괜찮아"];
+var YES = ["좋아", "조아", "좋다", "그래", "응", "오케이", "오케", "네",
+           "예", "시작", "콜", "할게", "할께", "해줘", "찍어", "찍을게", "yes", "ok"];
+var NO  = ["아니", "안해", "안 해", "싫어", "패스", "나중", "취소", "괜찮아", "no"];
+
+/* offer 카드의 음성 상태 줄을 갱신 */
+function setVoiceHint(html) {
+  var el = document.getElementById("vhint");
+  if (el) el.innerHTML = html;
+}
 
 function setupRecognition() {
   var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SR) return null;
+  if (!SR) {
+    App.sttSupported = false;
+    return null;
+  }
+  App.sttSupported = true;
   var r = new SR();
   r.lang = "ko-KR";
   r.continuous = true;
   r.interimResults = true;
+
+  r.onstart = function () {
+    App.sttRunning = true;
+    if (App.state === "offer") {
+      setVoiceHint(
+        '<span class="mic-wave"><span></span><span></span><span></span><span></span></span>' +
+        '<span><b>"좋아"</b> 라고 말해보세요 · 듣고 있어요</span>'
+      );
+    }
+  };
+
   r.onresult = function (ev) {
     if (App.state !== "offer") return;
     var txt = "";
     for (var i = ev.resultIndex; i < ev.results.length; i++) {
       txt += ev.results[i][0].transcript;
     }
-    txt = txt.replace(/\s/g, "");
-    if (YES.some(function (k) { return txt.indexOf(k) >= 0; })) {
+    var clean = txt.replace(/\s/g, "").toLowerCase();
+    App.sttHeard = txt.trim();
+    // 들리는 말을 실시간으로 화면에 표시 (사용자가 확인 가능)
+    setVoiceHint(
+      '<span class="mic-wave"><span></span><span></span><span></span><span></span></span>' +
+      '<span>들은 말: <b>' + (App.sttHeard || "…") + '</b></span>'
+    );
+    if (YES.some(function (k) { return clean.indexOf(k.replace(/\s/g,"")) >= 0; })) {
       onAccept();
-    } else if (NO.some(function (k) { return txt.indexOf(k) >= 0; })) {
+    } else if (NO.some(function (k) { return clean.indexOf(k.replace(/\s/g,"")) >= 0; })) {
       onDecline();
     }
   };
+
+  r.onerror = function (ev) {
+    App.sttRunning = false;
+    var code = ev && ev.error ? ev.error : "unknown";
+    // 권한 거부 — 사용자가 직접 허용해야 함
+    if (code === "not-allowed" || code === "service-not-allowed") {
+      if (App.state === "offer") {
+        setVoiceHint('<span style="color:var(--coral)">마이크 권한이 거부됨 — 아래 버튼을 눌러주세요</span>');
+      }
+      setDebug("STT 오류: 마이크 권한 거부 (not-allowed)", "err");
+      return;
+    }
+    // no-speech / aborted 등은 흔한 비치명적 오류 — 조용히 재시작 유도
+    setDebug("STT 오류: " + code, "warn");
+  };
+
   r.onend = function () {
-    // 자동 종료되면 offer 상태에서는 재시작
+    App.sttRunning = false;
+    // offer 상태이고 계속 들어야 하면 재시작 (continuous 가 자동 종료될 때 대비)
     if (App.listening && App.state === "offer") {
       try { r.start(); } catch (e) {}
     }
   };
+
   return r;
 }
+
 function startListening() {
-  if (!App.recognition) return;
+  if (!App.recognition) {
+    // STT 미지원(주로 iOS 사파리) — 버튼으로만 진행
+    setVoiceHint('<span style="color:var(--amber)">이 브라우저는 음성 인식 미지원 — 아래 버튼을 눌러주세요</span>');
+    setDebug("STT 미지원 브라우저 — 버튼 모드", "warn");
+    return;
+  }
+  // TTS 가 아직 말하는 중이면 끝난 뒤 시작 (충돌 방지)
+  if (App.speaking) {
+    setTimeout(startListening, 300);
+    return;
+  }
   App.listening = true;
-  try { App.recognition.start(); } catch (e) {}
+  try {
+    App.recognition.start();
+  } catch (e) {
+    // 이미 start 된 상태면 InvalidStateError — 무시해도 됨
+    if (String(e).indexOf("InvalidState") < 0) {
+      setDebug("STT 시작 실패: " + (e.message || e), "err");
+    }
+  }
 }
+
 function stopListening() {
   App.listening = false;
-  if (App.recognition) { try { App.recognition.stop(); } catch (e) {} }
+  if (App.recognition) {
+    try { App.recognition.stop(); } catch (e) {}
+  }
 }
 
 /* ============================================================
@@ -635,8 +722,7 @@ function enterOffer(offer) {
       surgeTag +
     '</div>' +
     '<div class="voice-hint" id="vhint">' +
-      '<span class="mic-wave"><span></span><span></span><span></span><span></span></span>' +
-      '<span><b>"좋아"</b> 라고 말하면 녹화를 시작합니다</span>' +
+      '<span>마이크 준비 중… 안내가 끝나면 "좋아"라고 말하거나 버튼을 누르세요</span>' +
     '</div>' +
     '<div class="btn-row">' +
       '<button class="primary" id="btn-yes">좋아, 찍을게</button>' +
