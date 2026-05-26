@@ -204,7 +204,9 @@ def index():
 
 
 if __name__ == "__main__":
-    print(f"[행동 데이터 마켓] 분류 백엔드 시작 — 모델: {MODEL}")
-    print("  http://localhost:8000  에서 프론트엔드 + API 제공")
-    # 폰 실기기 테스트: 같은 와이파이에서 http://<PC_IP>:8000 으로 접속
-    app.run(host="0.0.0.0", port=8000, debug=True)
+    # 배포 호스팅(Render/Railway 등)은 PORT 환경변수로 포트를 지정한다.
+    # 로컬 실행 시에는 기본 8000.
+    port = int(os.environ.get("PORT", 8000))
+    debug = os.environ.get("FLASK_DEBUG", "1") == "1"
+    print(f"[행동 데이터 마켓] 분류 백엔드 시작 — 모델: {MODEL}, 포트: {port}")
+    app.run(host="0.0.0.0", port=port, debug=debug)
