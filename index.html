@@ -1,0 +1,649 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+<title>행동 데이터 마켓 — 라이브 캡처</title>
+<style>
+  :root {
+    --bg: #0E1414;
+    --panel: rgba(14, 20, 20, 0.82);
+    --line: rgba(255, 255, 255, 0.14);
+    --teal: #02C39A;
+    --teal-dim: #028090;
+    --coral: #E07A5F;
+    --amber: #EFB54B;
+    --text: #F0F4F4;
+    --muted: #9DB0B0;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    height: 100%; width: 100%;
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Malgun Gothic", sans-serif;
+    overflow: hidden;
+  }
+  #app { position: fixed; inset: 0; }
+
+  /* ---- camera ---- */
+  #cam {
+    position: absolute; inset: 0;
+    width: 100%; height: 100%;
+    object-fit: cover;
+    background: #000;
+  }
+  #scrim {
+    position: absolute; inset: 0;
+    background: linear-gradient(180deg, rgba(0,0,0,0.45) 0%, rgba(0,0,0,0) 28%, rgba(0,0,0,0) 62%, rgba(0,0,0,0.6) 100%);
+    pointer-events: none;
+  }
+
+  /* ---- top status bar ---- */
+  #topbar {
+    position: absolute; top: 0; left: 0; right: 0;
+    padding: 14px 18px; padding-top: max(14px, env(safe-area-inset-top));
+    display: flex; align-items: center; gap: 10px;
+    font-size: 13px;
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
+  .dot.live { background: var(--coral); animation: pulse 1.4s infinite; }
+  .dot.scan { background: var(--teal); animation: pulse 1.4s infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }
+  #status-text { font-weight: 500; letter-spacing: 0.2px; }
+  #rec-timer {
+    margin-left: auto; font-variant-numeric: tabular-nums;
+    font-size: 13px; color: var(--coral); font-weight: 600;
+    display: none;
+  }
+
+  /* ---- center scan reticle ---- */
+  #reticle {
+    position: absolute; top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    width: 64px; height: 64px;
+    pointer-events: none; opacity: 0; transition: opacity .4s;
+  }
+  #reticle.on { opacity: 0.7; }
+  #reticle .corner {
+    position: absolute; width: 18px; height: 18px;
+    border: 2px solid var(--teal);
+  }
+  #reticle .tl { top: 0; left: 0; border-right: 0; border-bottom: 0; }
+  #reticle .tr { top: 0; right: 0; border-left: 0; border-bottom: 0; }
+  #reticle .bl { bottom: 0; left: 0; border-right: 0; border-top: 0; }
+  #reticle .br { bottom: 0; right: 0; border-left: 0; border-top: 0; }
+
+  /* ---- bottom card ---- */
+  #card {
+    position: absolute; left: 12px; right: 12px;
+    bottom: max(16px, env(safe-area-inset-bottom));
+    background: var(--panel);
+    -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px);
+    border: 0.5px solid var(--line);
+    border-radius: 18px;
+    padding: 16px 18px;
+    transition: transform .35s cubic-bezier(.2,.8,.2,1), opacity .3s;
+  }
+  #card.hidden { transform: translateY(140%); opacity: 0; }
+
+  .eyebrow {
+    font-size: 11px; letter-spacing: 1.4px; text-transform: uppercase;
+    color: var(--teal); font-weight: 600; margin-bottom: 6px;
+    display: flex; align-items: center; gap: 6px;
+  }
+  #card h1 { font-size: 18px; font-weight: 600; line-height: 1.35; }
+  #card .sub { font-size: 13px; color: var(--muted); margin-top: 4px; line-height: 1.5; }
+
+  .price-row {
+    display: flex; align-items: baseline; gap: 8px;
+    margin: 12px 0 4px;
+  }
+  .price { font-size: 26px; font-weight: 700; color: var(--teal); font-variant-numeric: tabular-nums; }
+  .price-unit { font-size: 13px; color: var(--muted); }
+  .surge {
+    font-size: 11px; color: var(--amber);
+    border: 0.5px solid rgba(239,181,75,0.4); border-radius: 6px;
+    padding: 2px 7px; margin-left: auto; align-self: center;
+  }
+
+  .voice-hint {
+    margin-top: 12px; padding: 10px 12px;
+    background: rgba(255,255,255,0.05); border-radius: 10px;
+    font-size: 12.5px; color: var(--muted);
+    display: flex; align-items: center; gap: 8px;
+  }
+  .voice-hint b { color: var(--text); font-weight: 600; }
+  .mic-wave { display: inline-flex; gap: 2px; align-items: flex-end; height: 14px; }
+  .mic-wave span {
+    width: 3px; background: var(--teal); border-radius: 2px;
+    animation: wave 0.9s infinite ease-in-out;
+  }
+  .mic-wave span:nth-child(1){ height: 5px; animation-delay: 0s; }
+  .mic-wave span:nth-child(2){ height: 12px; animation-delay: .15s; }
+  .mic-wave span:nth-child(3){ height: 8px; animation-delay: .3s; }
+  .mic-wave span:nth-child(4){ height: 14px; animation-delay: .45s; }
+  @keyframes wave { 0%,100%{ transform: scaleY(0.4); } 50%{ transform: scaleY(1); } }
+
+  .btn-row { display: flex; gap: 8px; margin-top: 14px; }
+  button {
+    flex: 1; font-family: inherit; font-size: 14px; font-weight: 600;
+    padding: 12px 10px; border-radius: 11px; cursor: pointer;
+    border: 0.5px solid var(--line); background: rgba(255,255,255,0.06);
+    color: var(--text); transition: transform .1s, background .2s;
+  }
+  button:active { transform: scale(0.97); }
+  button.primary { background: var(--teal); color: #04342C; border-color: var(--teal); }
+  button.ghost { flex: 0 0 auto; padding: 12px 14px; }
+
+  /* ---- progress bar (de-id / upload) ---- */
+  .prog { height: 5px; background: rgba(255,255,255,0.1); border-radius: 3px; margin-top: 12px; overflow: hidden; }
+  .prog > div { height: 100%; width: 0%; background: var(--teal); transition: width .3s; }
+
+  .checklist { margin-top: 10px; }
+  .checklist .item {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 13px; padding: 5px 0; color: var(--muted);
+  }
+  .checklist .item .ic { width: 16px; text-align: center; }
+  .checklist .item.done { color: var(--text); }
+  .checklist .item.done .ic { color: var(--teal); }
+
+  /* ---- start gate ---- */
+  #gate {
+    position: absolute; inset: 0; z-index: 20;
+    background: var(--bg);
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    padding: 32px; text-align: center;
+  }
+  #gate .glyph {
+    width: 60px; height: 60px; border-radius: 16px;
+    border: 1.5px solid var(--teal);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 30px; margin-bottom: 20px; color: var(--teal);
+  }
+  #gate h2 { font-size: 20px; font-weight: 700; margin-bottom: 10px; }
+  #gate p { font-size: 13.5px; color: var(--muted); line-height: 1.6; max-width: 320px; margin-bottom: 8px; }
+  #gate .perm { font-size: 12px; color: var(--muted); margin: 14px 0 22px; }
+  #gate .perm span { color: var(--teal); }
+  #gate button { flex: none; width: 240px; padding: 14px; font-size: 15px; }
+  #gate .err { color: var(--coral); font-size: 12.5px; margin-top: 14px; min-height: 16px; }
+
+  /* rotate hint for portrait */
+  #rotate {
+    position: absolute; inset: 0; z-index: 30;
+    background: var(--bg); display: none;
+    flex-direction: column; align-items: center; justify-content: center;
+    padding: 32px; text-align: center;
+  }
+  #rotate .ic { font-size: 40px; margin-bottom: 16px; animation: tip 1.8s infinite; }
+  @keyframes tip { 0%,100%{ transform: rotate(0); } 50%{ transform: rotate(-90deg); } }
+  #rotate p { font-size: 14px; color: var(--muted); }
+  @media (orientation: portrait) and (max-width: 560px) {
+    #rotate.armed { display: flex; }
+  }
+
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); }
+</style>
+</head>
+<body>
+<div id="app">
+
+  <video id="cam" playsinline muted autoplay></video>
+  <div id="scrim"></div>
+
+  <div id="reticle">
+    <div class="corner tl"></div><div class="corner tr"></div>
+    <div class="corner bl"></div><div class="corner br"></div>
+  </div>
+
+  <div id="topbar">
+    <div class="dot" id="status-dot"></div>
+    <span id="status-text">대기 중</span>
+    <span id="rec-timer">● 00:00</span>
+  </div>
+
+  <div id="card" class="hidden" role="status" aria-live="polite"></div>
+
+  <!-- start gate -->
+  <div id="gate">
+    <div class="glyph">◎</div>
+    <h2>행동 데이터 마켓 — 라이브 캡처</h2>
+    <p>카메라가 주변 행동을 살피다가, 수익화 가능한 태스크가 보이면 음성으로 안내합니다.</p>
+    <p>"좋아" 라고 답하면 바로 녹화·업로드가 시작됩니다.</p>
+    <div class="perm">필요 권한 — <span>카메라</span> · <span>마이크</span></div>
+    <button class="primary" id="gate-start">시작하기</button>
+    <div class="err" id="gate-err"></div>
+  </div>
+
+  <!-- rotate hint -->
+  <div id="rotate">
+    <div class="ic">📱</div>
+    <p>가로모드로 돌려주세요</p>
+  </div>
+
+</div>
+
+<script>
+"use strict";
+/* ============================================================
+   행동 데이터 마켓 — 모바일 라이브 캡처 프로토타입
+   ------------------------------------------------------------
+   동작하는 것  : 가로 카메라 프리뷰, 주기적 프레임 캡처,
+                  음성 안내(TTS), 음성 응답 인식(STT),
+                  녹화(MediaRecorder), 태스크 분류(Gemini 백엔드)
+   시뮬레이션   : 비식별화·업로드 처리 단계의 진행 표시
+                  (실제 업로드/마스킹 연동은 다음 단계)
+   필요         : server.py 백엔드가 떠 있어야 분류가 동작.
+                  단독 실행 시 분류 호출이 실패해 계속 "탐색 중".
+   ============================================================ */
+
+var App = {
+  stream: null,
+  recorder: null,
+  chunks: [],
+  recStart: 0,
+  recTimer: null,
+  scanTimer: null,
+  state: "idle",          // idle | scanning | offer | recording | processing | done
+  current: null,          // 현재 인식된 태스크 offer
+  recognition: null,
+  listening: false
+};
+
+/* ---- DOM refs ---- */
+var $cam = document.getElementById("cam");
+var $card = document.getElementById("card");
+var $dot = document.getElementById("status-dot");
+var $statusText = document.getElementById("status-text");
+var $recTimer = document.getElementById("rec-timer");
+var $reticle = document.getElementById("reticle");
+var $gate = document.getElementById("gate");
+var $gateErr = document.getElementById("gate-err");
+var $rotate = document.getElementById("rotate");
+
+/* ============================================================
+   1. 태스크 분류 — 실제 백엔드(Gemini) 호출
+   ------------------------------------------------------------
+   프레임 dataURL 을 /api/classify 로 보내고 결과를 받는다.
+   반환: { task, rate, conf, surge }  또는  null(태스크 없음)
+   백엔드 server.py 가 Gemini API 로 분류한다.
+   ============================================================ */
+// 백엔드 주소. 같은 서버에서 서빙하면 "" 로 두면 되고,
+// 폰 실기기 테스트 시 PC IP 를 넣는다. 예: "http://192.168.0.10:8000"
+var API_BASE = "";
+
+function classifyFrame(frameDataUrl) {
+  // async — 호출부에서 await/then 으로 처리
+  return fetch(API_BASE + "/api/classify", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ image: frameDataUrl })
+  }).then(function (res) {
+    if (res.status === 429) {
+      // 무료 등급 한도 초과 — 스캔 간격을 늘리라는 신호
+      return { _rateLimited: true };
+    }
+    if (!res.ok) return { _error: true };
+    return res.json();
+  }).then(function (data) {
+    if (!data || data._error) return null;
+    if (data._rateLimited) return { _rateLimited: true };
+    if (!data.task) return null;          // 태스크 없음
+    return data;                          // { task, rate, conf, surge }
+  }).catch(function () {
+    return null;                          // 네트워크 오류 — 다음 스캔에서 재시도
+  });
+}
+
+/* ============================================================
+   2. 카메라 시작
+   ============================================================ */
+async function startCamera() {
+  try {
+    App.stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 } },
+      audio: true
+    });
+    $cam.srcObject = App.stream;
+    await $cam.play();
+    return true;
+  } catch (e) {
+    $gateErr.textContent = "카메라/마이크 접근 실패: " + (e.message || e.name);
+    return false;
+  }
+}
+
+/* ============================================================
+   3. 프레임 캡처 — 프리뷰에서 한 장을 dataURL로
+   ============================================================ */
+function captureFrame() {
+  var w = $cam.videoWidth, h = $cam.videoHeight;
+  if (!w || !h) return null;
+  var scale = 480 / Math.max(w, h);
+  var cv = document.createElement("canvas");
+  cv.width = Math.round(w * scale);
+  cv.height = Math.round(h * scale);
+  cv.getContext("2d").drawImage($cam, 0, 0, cv.width, cv.height);
+  return cv.toDataURL("image/jpeg", 0.7);
+}
+
+/* ============================================================
+   4. 음성 출력 (TTS)
+   ============================================================ */
+function speak(text, onEnd) {
+  if (!("speechSynthesis" in window)) { if (onEnd) onEnd(); return; }
+  window.speechSynthesis.cancel();
+  var u = new SpeechSynthesisUtterance(text);
+  u.lang = "ko-KR";
+  u.rate = 1.05;
+  if (onEnd) u.onend = onEnd;
+  window.speechSynthesis.speak(u);
+}
+
+/* ============================================================
+   5. 음성 인식 (STT) — "좋아" 류 / "아니" 류 듣기
+   ============================================================ */
+var YES = ["좋아", "그래", "응", "오케이", "오케", "네", "예", "시작", "콜", "할게", "해줘"];
+var NO  = ["아니", "싫어", "안해", "패스", "나중", "취소", "괜찮아"];
+
+function setupRecognition() {
+  var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) return null;
+  var r = new SR();
+  r.lang = "ko-KR";
+  r.continuous = true;
+  r.interimResults = true;
+  r.onresult = function (ev) {
+    if (App.state !== "offer") return;
+    var txt = "";
+    for (var i = ev.resultIndex; i < ev.results.length; i++) {
+      txt += ev.results[i][0].transcript;
+    }
+    txt = txt.replace(/\s/g, "");
+    if (YES.some(function (k) { return txt.indexOf(k) >= 0; })) {
+      onAccept();
+    } else if (NO.some(function (k) { return txt.indexOf(k) >= 0; })) {
+      onDecline();
+    }
+  };
+  r.onend = function () {
+    // 자동 종료되면 offer 상태에서는 재시작
+    if (App.listening && App.state === "offer") {
+      try { r.start(); } catch (e) {}
+    }
+  };
+  return r;
+}
+function startListening() {
+  if (!App.recognition) return;
+  App.listening = true;
+  try { App.recognition.start(); } catch (e) {}
+}
+function stopListening() {
+  App.listening = false;
+  if (App.recognition) { try { App.recognition.stop(); } catch (e) {} }
+}
+
+/* ============================================================
+   6. 상태 머신
+   ============================================================ */
+function setStatus(mode, text) {
+  $dot.className = "dot" + (mode ? " " + mode : "");
+  $statusText.textContent = text;
+}
+
+function showCard(html) {
+  $card.innerHTML = html;
+  $card.classList.remove("hidden");
+}
+function hideCard() {
+  $card.classList.add("hidden");
+}
+
+/* --- 6a. 스캔 시작 --- */
+function enterScanning() {
+  App.state = "scanning";
+  App.current = null;
+  hideCard();
+  $reticle.classList.add("on");
+  setStatus("scan", "주변 행동 분석 중…");
+
+  // 스캔 간격: Gemini 무료 등급 한도(15 RPM)를 넘지 않도록 5초.
+  // 429(한도 초과)를 받으면 간격을 점진적으로 늘린다.
+  App.scanInterval = 5000;
+  App.scanBusy = false;
+
+  function tickScan() {
+    if (App.state !== "scanning") return;
+    if (App.scanBusy) return;                 // 이전 분류 응답 대기 중이면 건너뜀
+    var frame = captureFrame();
+    if (!frame) { App.scanTimer = setTimeout(tickScan, App.scanInterval); return; }
+
+    App.scanBusy = true;
+    classifyFrame(frame).then(function (result) {
+      App.scanBusy = false;
+      if (App.state !== "scanning") return;
+
+      if (result && result._rateLimited) {
+        // 무료 등급 한도 초과 — 간격을 늘려 다시 시도 (최대 20초)
+        App.scanInterval = Math.min(App.scanInterval + 4000, 20000);
+        setStatus("scan", "한도 조절 중… 잠시 후 재개");
+        App.scanTimer = setTimeout(tickScan, App.scanInterval);
+        return;
+      }
+      if (result && result.task) {
+        enterOffer(result);                   // 태스크 발견
+        return;
+      }
+      // 태스크 없음 — 다음 스캔 예약
+      App.scanTimer = setTimeout(tickScan, App.scanInterval);
+    });
+  }
+  tickScan();
+}
+
+/* --- 6b. 태스크 발견 → 음성 안내 + 음성 응답 대기 --- */
+function enterOffer(offer) {
+  App.state = "offer";
+  App.current = offer;
+  $reticle.classList.remove("on");
+  setStatus("scan", "태스크 인식됨");
+
+  var surgeTag = offer.surge
+    ? '<span class="surge">수요 급증</span>' : '';
+  showCard(
+    '<div class="eyebrow">◎ 태스크 인식 · 신뢰도 ' + offer.conf + '%</div>' +
+    '<h1>' + offer.task + '</h1>' +
+    '<div class="price-row">' +
+      '<span class="price">' + offer.rate.toLocaleString() + '원</span>' +
+      '<span class="price-unit">/ 시간 적립</span>' +
+      surgeTag +
+    '</div>' +
+    '<div class="voice-hint" id="vhint">' +
+      '<span class="mic-wave"><span></span><span></span><span></span><span></span></span>' +
+      '<span><b>"좋아"</b> 라고 말하면 녹화를 시작합니다</span>' +
+    '</div>' +
+    '<div class="btn-row">' +
+      '<button class="primary" id="btn-yes">좋아, 찍을게</button>' +
+      '<button id="btn-no">나중에</button>' +
+    '</div>'
+  );
+  document.getElementById("btn-yes").onclick = onAccept;
+  document.getElementById("btn-no").onclick = onDecline;
+
+  // 음성 안내 → 끝나면 음성 인식 시작
+  var line = "현재 " + offer.task + " 태스크가 인식됐어요. " +
+             "영상 데이터를 업로드하면 시간당 " + offer.rate.toLocaleString() +
+             "원이 적립됩니다. 공유할까요?";
+  speak(line, function () {
+    if (App.state === "offer") startListening();
+  });
+}
+
+/* --- 6c. 수락 → 녹화 시작 --- */
+function onAccept() {
+  if (App.state !== "offer") return;
+  stopListening();
+  startRecording();
+}
+function onDecline() {
+  if (App.state !== "offer") return;
+  stopListening();
+  speak("알겠어요. 다른 태스크를 계속 찾아볼게요.");
+  enterScanning();
+}
+
+/* --- 6d. 녹화 --- */
+function startRecording() {
+  App.state = "recording";
+  App.chunks = [];
+  setStatus("live", "녹화 중");
+  $recTimer.style.display = "block";
+
+  try {
+    App.recorder = new MediaRecorder(App.stream, { mimeType: pickMime() });
+  } catch (e) {
+    App.recorder = new MediaRecorder(App.stream);
+  }
+  App.recorder.ondataavailable = function (e) {
+    if (e.data && e.data.size > 0) App.chunks.push(e.data);
+  };
+  App.recorder.onstop = function () { enterProcessing(); };
+  App.recorder.start();
+
+  App.recStart = Date.now();
+  App.recTimer = setInterval(tickTimer, 250);
+
+  var t = App.current;
+  showCard(
+    '<div class="eyebrow" style="color:var(--coral)">● 녹화 중</div>' +
+    '<h1>' + t.task + '</h1>' +
+    '<div class="sub">자연스럽게 평소처럼 행동하세요. 충분히 찍었으면 종료를 누르면 됩니다.</div>' +
+    '<div class="btn-row">' +
+      '<button class="primary" id="btn-stop">녹화 종료 · 업로드</button>' +
+    '</div>'
+  );
+  document.getElementById("btn-stop").onclick = stopRecording;
+  speak("녹화를 시작합니다.");
+}
+function pickMime() {
+  var cands = ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm", "video/mp4"];
+  for (var i = 0; i < cands.length; i++) {
+    if (window.MediaRecorder && MediaRecorder.isTypeSupported(cands[i])) return cands[i];
+  }
+  return "";
+}
+function tickTimer() {
+  var s = Math.floor((Date.now() - App.recStart) / 1000);
+  var mm = String(Math.floor(s / 60)).padStart(2, "0");
+  var ss = String(s % 60).padStart(2, "0");
+  $recTimer.textContent = "● " + mm + ":" + ss;
+}
+function stopRecording() {
+  if (App.state !== "recording") return;
+  clearInterval(App.recTimer);
+  $recTimer.style.display = "none";
+  if (App.recorder && App.recorder.state !== "inactive") App.recorder.stop();
+}
+
+/* --- 6e. 업로드 전 처리 — 비식별화 + 업로드 (시뮬레이션) --- */
+function enterProcessing() {
+  App.state = "processing";
+  setStatus("scan", "업로드 처리 중");
+
+  var blob = new Blob(App.chunks, { type: (App.chunks[0] && App.chunks[0].type) || "video/webm" });
+  var sizeMB = (blob.size / (1024 * 1024)).toFixed(1);
+  var durSec = Math.max(1, Math.round((Date.now() - App.recStart) / 1000));
+
+  showCard(
+    '<div class="eyebrow">업로드 전 처리</div>' +
+    '<h1>비식별화 후 마켓에 등록</h1>' +
+    '<div class="sub">' + sizeMB + 'MB · ' + durSec + '초 분량</div>' +
+    '<div class="checklist" id="chk">' +
+      '<div class="item" data-k="0"><span class="ic">○</span>얼굴 자동 마스킹</div>' +
+      '<div class="item" data-k="1"><span class="ic">○</span>번호판·문서 텍스트 가림</div>' +
+      '<div class="item" data-k="2"><span class="ic">○</span>타인 음성 구간 제거</div>' +
+      '<div class="item" data-k="3"><span class="ic">○</span>암호화 업로드</div>' +
+    '</div>' +
+    '<div class="prog"><div id="pbar"></div></div>'
+  );
+
+  var items = $card.querySelectorAll(".checklist .item");
+  var bar = document.getElementById("pbar");
+  var step = 0;
+  var iv = setInterval(function () {
+    if (step < items.length) {
+      items[step].classList.add("done");
+      items[step].querySelector(".ic").textContent = "✓";
+      step++;
+      bar.style.width = (step / items.length * 100) + "%";
+    } else {
+      clearInterval(iv);
+      setTimeout(function(){ enterDone(durSec); }, 450);
+    }
+  }, 700);
+}
+
+/* --- 6f. 완료 — 적립 결과 --- */
+function enterDone(durSec) {
+  App.state = "done";
+  setStatus("", "업로드 완료");
+  var t = App.current;
+  var earned = Math.round(t.rate * (durSec / 3600));
+  var earnedShown = Math.max(earned, Math.round(t.rate / 60)); // 데모: 최소 1분치 보장
+
+  showCard(
+    '<div class="eyebrow">적립 완료</div>' +
+    '<h1 style="color:var(--teal)">+' + earnedShown.toLocaleString() + '원 적립</h1>' +
+    '<div class="sub">' + t.task + ' · ' + durSec + '초 클립 · ' +
+      t.rate.toLocaleString() + '원/시간 기준</div>' +
+    '<div class="voice-hint" style="margin-top:14px;">' +
+      '<span>채택 시 정산되며, 내역은 앱에서 투명하게 확인할 수 있어요.</span>' +
+    '</div>' +
+    '<div class="btn-row">' +
+      '<button class="primary" id="btn-again">계속 탐색</button>' +
+    '</div>'
+  );
+  document.getElementById("btn-again").onclick = function () {
+    enterScanning();
+  };
+  speak(earnedShown.toLocaleString() + "원이 적립됐어요. 계속 탐색할까요?");
+}
+
+/* ============================================================
+   7. 부팅
+   ============================================================ */
+document.getElementById("gate-start").onclick = async function () {
+  $gateErr.textContent = "";
+  var ok = await startCamera();
+  if (!ok) return;
+  App.recognition = setupRecognition();
+  if (!App.recognition) {
+    $gateErr.textContent = "이 브라우저는 음성 인식을 지원하지 않아요. 버튼으로 진행됩니다.";
+    setTimeout(launch, 1600);
+  } else {
+    launch();
+  }
+};
+
+function launch() {
+  $gate.style.display = "none";
+  $rotate.classList.add("armed");
+  // 짧게 안내 후 스캔 시작
+  setStatus("scan", "준비 중…");
+  speak("카메라를 가로로 들고 주변을 비춰주세요. 수익화 가능한 행동을 찾고 있어요.", function(){
+    enterScanning();
+  });
+  // TTS가 막힌 환경 대비 — 3초 후 무조건 스캔 시작
+  setTimeout(function () {
+    if (App.state === "idle") enterScanning();
+  }, 3500);
+}
+
+window.addEventListener("beforeunload", function () {
+  if (App.stream) App.stream.getTracks().forEach(function (t) { t.stop(); });
+});
+</script>
+</body>
+</html>
