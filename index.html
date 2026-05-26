@@ -169,6 +169,76 @@
   #gate button { flex: none; width: 240px; padding: 14px; font-size: 15px; }
   #gate .err { color: var(--coral); font-size: 12.5px; margin-top: 14px; min-height: 16px; }
 
+  /* 목록 버튼 (topbar 우측) */
+  #guide-btn {
+    flex: 0 0 auto; margin-left: 8px;
+    font-size: 11px; font-weight: 600; padding: 5px 10px;
+    border-radius: 8px; border: 0.5px solid var(--line);
+    background: rgba(255,255,255,0.08); color: var(--text);
+  }
+  #rec-timer + #guide-btn { margin-left: 8px; }
+
+  /* 디버그 오버레이 */
+  #debug {
+    position: absolute; left: 12px; right: 12px;
+    top: calc(max(14px, env(safe-area-inset-top)) + 38px);
+    pointer-events: none;
+  }
+  #debug-text {
+    display: inline-block; max-width: 100%;
+    font-size: 11px; line-height: 1.4;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    color: var(--teal);
+    background: rgba(0,0,0,0.6); border-radius: 6px;
+    padding: 4px 8px;
+  }
+  #debug-text.warn { color: var(--amber); }
+  #debug-text.err  { color: var(--coral); }
+
+  /* 인식 가능한 행동 가이드 시트 */
+  #guide {
+    position: absolute; inset: 0; z-index: 25;
+    background: rgba(0,0,0,0.55);
+    display: flex; align-items: flex-end; justify-content: center;
+    transition: opacity .25s;
+  }
+  #guide.hidden { opacity: 0; pointer-events: none; }
+  #guide-inner {
+    width: 100%; max-height: 80%;
+    background: var(--bg);
+    border-top-left-radius: 18px; border-top-right-radius: 18px;
+    border-top: 0.5px solid var(--line);
+    padding: 16px 18px; padding-bottom: max(18px, env(safe-area-inset-bottom));
+    overflow-y: auto;
+  }
+  #guide-head {
+    display: flex; align-items: center; justify-content: space-between;
+    font-size: 15px; font-weight: 700; margin-bottom: 4px;
+  }
+  #guide-close {
+    flex: 0 0 auto; font-size: 13px; padding: 4px 10px;
+    border-radius: 8px; border: 0.5px solid var(--line);
+    background: rgba(255,255,255,0.06); color: var(--text);
+  }
+  #guide-note { font-size: 12px; color: var(--muted); margin-bottom: 12px; line-height: 1.5; }
+  .guide-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 9px 0; border-bottom: 0.5px solid var(--line);
+  }
+  .guide-item:last-child { border-bottom: 0; }
+  .guide-item .gi-main { flex: 1; min-width: 0; }
+  .guide-item .gi-label { font-size: 13.5px; font-weight: 600; }
+  .guide-item .gi-hint { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+  .guide-item .gi-rate {
+    flex: 0 0 auto; font-size: 12px; font-weight: 700;
+    color: var(--teal); font-variant-numeric: tabular-nums;
+  }
+  .guide-item .gi-surge {
+    flex: 0 0 auto; font-size: 10px; color: var(--amber);
+    border: 0.5px solid rgba(239,181,75,0.4); border-radius: 5px;
+    padding: 1px 5px; margin-left: 4px;
+  }
+
   /* rotate hint for portrait */
   #rotate {
     position: absolute; inset: 0; z-index: 30;
@@ -201,9 +271,27 @@
     <div class="dot" id="status-dot"></div>
     <span id="status-text">대기 중</span>
     <span id="rec-timer">● 00:00</span>
+    <button id="guide-btn" aria-label="인식 가능한 행동 목록">목록</button>
+  </div>
+
+  <!-- 디버그 오버레이 — 매 스캔 결과를 보여줌 -->
+  <div id="debug">
+    <span id="debug-text">대기 중</span>
   </div>
 
   <div id="card" class="hidden" role="status" aria-live="polite"></div>
+
+  <!-- 인식 가능한 행동 가이드 시트 -->
+  <div id="guide" class="hidden">
+    <div id="guide-inner">
+      <div id="guide-head">
+        <span>인식 가능한 행동</span>
+        <button id="guide-close" aria-label="닫기">✕</button>
+      </div>
+      <p id="guide-note">아래 행동을 카메라에 또렷하게 비추면 인식됩니다.</p>
+      <div id="guide-list"></div>
+    </div>
+  </div>
 
   <!-- start gate -->
   <div id="gate">
@@ -245,6 +333,9 @@ var App = {
   recStart: 0,
   recTimer: null,
   scanTimer: null,
+  scanInterval: 5000,
+  scanBusy: false,
+  scanCount: 0,
   state: "idle",          // idle | scanning | offer | recording | processing | done
   current: null,          // 현재 인식된 태스크 offer
   recognition: null,
@@ -261,6 +352,55 @@ var $reticle = document.getElementById("reticle");
 var $gate = document.getElementById("gate");
 var $gateErr = document.getElementById("gate-err");
 var $rotate = document.getElementById("rotate");
+var $debugText = document.getElementById("debug-text");
+var $guide = document.getElementById("guide");
+var $guideList = document.getElementById("guide-list");
+
+/* ---- 디버그 오버레이 ---- */
+/* level: "" 정상정보 / "warn" 주의 / "err" 오류 */
+function setDebug(text, level) {
+  if (!$debugText) return;
+  $debugText.textContent = text;
+  $debugText.className = level || "";
+}
+
+/* ---- 인식 가능한 행동 가이드 ---- */
+function renderGuide(catalog) {
+  if (!catalog || !catalog.length) {
+    $guideList.innerHTML =
+      '<div style="font-size:12px;color:var(--coral);padding:8px 0;">' +
+      '백엔드에서 행동 목록을 받지 못했습니다. /api/health 를 확인하세요.</div>';
+    return;
+  }
+  $guideList.innerHTML = catalog.map(function (t) {
+    var surge = t.surge
+      ? '<span class="gi-surge">수요↑</span>' : '';
+    return '<div class="guide-item">' +
+      '<div class="gi-main">' +
+        '<div class="gi-label">' + t.label + '</div>' +
+        '<div class="gi-hint">' + (t.hint || '') + '</div>' +
+      '</div>' +
+      '<span class="gi-rate">' + t.rate.toLocaleString() + '원/h</span>' +
+      surge +
+    '</div>';
+  }).join("");
+}
+function openGuide() { $guide.classList.remove("hidden"); }
+function closeGuide() { $guide.classList.add("hidden"); }
+
+/* 백엔드에서 행동 카탈로그를 받아 가이드에 채운다 */
+function loadCatalog() {
+  fetch(API_BASE + "/api/health")
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (data) {
+      if (data && data.catalog) renderGuide(data.catalog);
+      else renderGuide(null);
+    })
+    .catch(function () { renderGuide(null); });
+}
+
+document.getElementById("guide-btn").onclick = openGuide;
+document.getElementById("guide-close").onclick = closeGuide;
 
 /* ============================================================
    1. 태스크 분류 — 실제 백엔드(Gemini) 호출
@@ -274,25 +414,38 @@ var $rotate = document.getElementById("rotate");
 var API_BASE = "";
 
 function classifyFrame(frameDataUrl) {
-  // async — 호출부에서 await/then 으로 처리
+  // async — 호출부에서 then 으로 처리.
+  // 항상 상태 객체를 반환한다(진단을 위해 null 대신):
+  //   { task, rate, conf, surge }      태스크 인식됨
+  //   { none: true, debug }            태스크 없음 / 신뢰도 미달
+  //   { rateLimited: true }            무료 등급 한도 초과(429)
+  //   { error: true, debug }           호출/네트워크 오류
+  var t0 = Date.now();
   return fetch(API_BASE + "/api/classify", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ image: frameDataUrl })
   }).then(function (res) {
-    if (res.status === 429) {
-      // 무료 등급 한도 초과 — 스캔 간격을 늘리라는 신호
-      return { _rateLimited: true };
+    if (res.status === 429) return { rateLimited: true };
+    if (!res.ok) {
+      return { error: true, debug: "API 오류 " + res.status };
     }
-    if (!res.ok) return { _error: true };
-    return res.json();
-  }).then(function (data) {
-    if (!data || data._error) return null;
-    if (data._rateLimited) return { _rateLimited: true };
-    if (!data.task) return null;          // 태스크 없음
-    return data;                          // { task, rate, conf, surge }
-  }).catch(function () {
-    return null;                          // 네트워크 오류 — 다음 스캔에서 재시도
+    return res.json().then(function (data) {
+      var ms = Date.now() - t0;
+      if (data && data.task) {
+        // 태스크 인식됨
+        return data;
+      }
+      // 태스크 없음 — 백엔드 _debug 를 그대로 노출
+      return {
+        none: true,
+        debug: (data && data._debug) ? data._debug : "태스크 없음",
+        ms: ms
+      };
+    });
+  }).catch(function (e) {
+    // 네트워크 오류 — 백엔드 미배포 / 주소 오설정 가능성
+    return { error: true, debug: "연결 실패 (백엔드 확인 필요)" };
   });
 }
 
@@ -408,11 +561,13 @@ function enterScanning() {
   hideCard();
   $reticle.classList.add("on");
   setStatus("scan", "주변 행동 분석 중…");
+  setDebug("스캔 시작 — 첫 프레임 분석 대기", "");
 
   // 스캔 간격: Gemini 무료 등급 한도(15 RPM)를 넘지 않도록 5초.
   // 429(한도 초과)를 받으면 간격을 점진적으로 늘린다.
   App.scanInterval = 5000;
   App.scanBusy = false;
+  App.scanCount = 0;
 
   function tickScan() {
     if (App.state !== "scanning") return;
@@ -421,22 +576,40 @@ function enterScanning() {
     if (!frame) { App.scanTimer = setTimeout(tickScan, App.scanInterval); return; }
 
     App.scanBusy = true;
+    App.scanCount++;
+    var n = App.scanCount;
+    setDebug("스캔 #" + n + " — 분석 중…", "");
+
     classifyFrame(frame).then(function (result) {
       App.scanBusy = false;
       if (App.state !== "scanning") return;
 
-      if (result && result._rateLimited) {
+      if (result.rateLimited) {
         // 무료 등급 한도 초과 — 간격을 늘려 다시 시도 (최대 20초)
         App.scanInterval = Math.min(App.scanInterval + 4000, 20000);
         setStatus("scan", "한도 조절 중… 잠시 후 재개");
+        setDebug("스캔 #" + n + " — Gemini 한도 초과, 간격 " +
+                 (App.scanInterval / 1000) + "초로 조절", "warn");
         App.scanTimer = setTimeout(tickScan, App.scanInterval);
         return;
       }
-      if (result && result.task) {
-        enterOffer(result);                   // 태스크 발견
+      if (result.error) {
+        // 호출/네트워크 오류 — 백엔드 문제
+        setStatus("scan", "백엔드 연결 확인 필요");
+        setDebug("스캔 #" + n + " — " + result.debug, "err");
+        App.scanTimer = setTimeout(tickScan, App.scanInterval);
         return;
       }
-      // 태스크 없음 — 다음 스캔 예약
+      if (result.task) {
+        // 태스크 발견
+        setDebug("스캔 #" + n + " — 인식: " + result.task +
+                 " (" + (result.conf || "?") + "%)", "");
+        enterOffer(result);
+        return;
+      }
+      // 태스크 없음 — 백엔드가 준 사유를 그대로 표시
+      setDebug("스캔 #" + n + " — " + (result.debug || "태스크 없음") +
+               (result.ms ? "  ·  " + result.ms + "ms" : ""), "warn");
       App.scanTimer = setTimeout(tickScan, App.scanInterval);
     });
   }
@@ -449,6 +622,7 @@ function enterOffer(offer) {
   App.current = offer;
   $reticle.classList.remove("on");
   setStatus("scan", "태스크 인식됨");
+  setDebug("", "");   // 카드가 뜨므로 디버그 줄 비움
 
   var surgeTag = offer.surge
     ? '<span class="surge">수요 급증</span>' : '';
@@ -630,8 +804,10 @@ document.getElementById("gate-start").onclick = async function () {
 function launch() {
   $gate.style.display = "none";
   $rotate.classList.add("armed");
+  loadCatalog();   // 인식 가능한 행동 목록을 백엔드에서 받아 가이드에 채움
   // 짧게 안내 후 스캔 시작
   setStatus("scan", "준비 중…");
+  setDebug("백엔드 연결 확인 중…", "");
   speak("카메라를 가로로 들고 주변을 비춰주세요. 수익화 가능한 행동을 찾고 있어요.", function(){
     enterScanning();
   });

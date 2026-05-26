@@ -49,15 +49,25 @@ client = genai.Client(api_key=API_KEY)
 # ----------------------------------------------------------------------
 # 2. 태스크 카탈로그
 #    실제 서비스에서는 이 단가/목록을 DB의 "현재 수요"에서 동적으로 가져온다.
-#    여기서는 고정값으로 둔다. surge(수요 급증)도 여기서 표시.
+#    여기서는 고정값으로 둔다.
+#      label : 화면/음성에 쓰는 이름
+#      rate  : 시간당 적립액(원)
+#      surge : 수요 급증 배지 여부
+#      hint  : 프론트 "인식 가능한 행동" 가이드에 보여줄 한 줄 설명
 # ----------------------------------------------------------------------
 TASK_CATALOG = {
-    "cooking":     {"label": "조리 — 끓이기·재료 손질", "rate": 8000,  "surge": True},
-    "dishwashing": {"label": "설거지 — 식기 정리",       "rate": 2500,  "surge": False},
-    "assembly":    {"label": "가전·가구 조립",           "rate": 14000, "surge": True},
-    "cleaning":    {"label": "청소 — 바닥·공간 정리",     "rate": 3500,  "surge": False},
-    "repair":      {"label": "정비·수리 작업",           "rate": 35000, "surge": True},
-    "laundry":     {"label": "빨래 — 세탁·개기",         "rate": 3000,  "surge": False},
+    # --- 손작업 (장면이 복잡, 단가 높음) ---
+    "cooking":     {"label": "조리 — 끓이기·재료 손질", "rate": 8000,  "surge": True,  "hint": "가스레인지·도마에서 요리하는 모습"},
+    "dishwashing": {"label": "설거지 — 식기 정리",       "rate": 2500,  "surge": False, "hint": "싱크대에서 그릇을 닦는 모습"},
+    "assembly":    {"label": "가전·가구 조립",           "rate": 14000, "surge": True,  "hint": "부품을 손으로 맞추거나 공구를 쓰는 모습"},
+    "cleaning":    {"label": "청소 — 바닥·공간 정리",     "rate": 3500,  "surge": False, "hint": "빗자루·청소기·걸레로 청소하는 모습"},
+    "repair":      {"label": "정비·수리 작업",           "rate": 35000, "surge": True,  "hint": "기계·가전을 분해하거나 수리하는 모습"},
+    "laundry":     {"label": "빨래 — 세탁·개기",         "rate": 3000,  "surge": False, "hint": "빨래를 널거나 개는 모습"},
+    # --- 책상 위 행동 (장면이 단순, 인식 쉬움, 테스트하기 좋음) ---
+    "typing":      {"label": "키보드 타이핑",            "rate": 2000,  "surge": False, "hint": "책상에서 키보드로 타이핑하는 손"},
+    "writing":     {"label": "필기 — 손글씨·메모",       "rate": 2200,  "surge": False, "hint": "펜으로 종이에 글씨를 쓰는 모습"},
+    "reading":     {"label": "독서 — 책장 넘기기",       "rate": 1800,  "surge": False, "hint": "책을 들고 페이지를 넘기며 읽는 모습"},
+    "mousework":   {"label": "마우스 작업 — 그리기·편집", "rate": 2500,  "surge": False, "hint": "마우스로 그림·디자인을 다루는 손"},
 }
 
 # 분류기에 보여줄 후보 키 목록
@@ -133,10 +143,18 @@ def classify_frame(image_bytes: bytes, mime: str) -> dict:
 
     key = parsed.get("task_key", "none")
     conf = int(parsed.get("confidence", 0))
+    reason = parsed.get("reason", "")
 
-    # 태스크 없음 / 신뢰도 미달
+    # 태스크 없음 / 신뢰도 미달 — 화면 디버그에 사유를 보여준다
     if key == "none" or key not in TASK_CATALOG or conf < CONFIDENCE_FLOOR:
-        return {"task": None, "_debug": f"key={key} conf={conf}"}
+        if key == "none":
+            dbg = f"태스크 없음 — {reason}"
+        elif key not in TASK_CATALOG:
+            dbg = f"미등록 키({key})"
+        else:
+            guess = TASK_CATALOG[key]["label"]
+            dbg = f"'{guess}' 추정이나 신뢰도 {conf}% (기준 {CONFIDENCE_FLOOR}% 미달)"
+        return {"task": None, "_debug": dbg}
 
     cat = TASK_CATALOG[key]
     return {
@@ -194,7 +212,18 @@ def api_classify():
 
 @app.route("/api/health", methods=["GET"])
 def api_health():
-    return jsonify({"ok": True, "model": MODEL, "tasks": TASK_KEYS})
+    # 프론트의 "인식 가능한 행동" 가이드가 이 catalog 를 그대로 표시한다.
+    catalog = [
+        {
+            "key": k,
+            "label": v["label"],
+            "rate": v["rate"],
+            "hint": v.get("hint", ""),
+            "surge": v["surge"],
+        }
+        for k, v in TASK_CATALOG.items()
+    ]
+    return jsonify({"ok": True, "model": MODEL, "catalog": catalog})
 
 
 @app.route("/")
