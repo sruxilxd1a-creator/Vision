@@ -170,13 +170,57 @@
   #gate .err { color: var(--coral); font-size: 12.5px; margin-top: 14px; min-height: 16px; }
 
   /* 목록 버튼 (topbar 우측) */
-  #guide-btn {
-    flex: 0 0 auto; margin-left: 8px;
+  #guide-btn, #sound-btn {
+    flex: 0 0 auto;
     font-size: 11px; font-weight: 600; padding: 5px 10px;
     border-radius: 8px; border: 0.5px solid var(--line);
     background: rgba(255,255,255,0.08); color: var(--text);
   }
-  #rec-timer + #guide-btn { margin-left: 8px; }
+  #sound-btn { margin-left: auto; font-size: 13px; padding: 4px 8px; }
+  #guide-btn { margin-left: 6px; }
+  #sound-btn.muted { color: var(--coral); border-color: rgba(224,122,95,0.5); }
+
+  /* 소리 조절 패널 (가이드 시트 안) */
+  #sound-ctl {
+    background: rgba(255,255,255,0.04);
+    border: 0.5px solid var(--line);
+    border-radius: 12px;
+    padding: 12px 14px; margin: 6px 0 14px;
+  }
+  .sc-row {
+    display: flex; align-items: center; gap: 10px;
+    padding: 6px 0;
+  }
+  .sc-label { font-size: 13px; font-weight: 600; flex: 0 0 64px; }
+  .sc-toggle {
+    margin-left: auto;
+    font-size: 12px; font-weight: 700; padding: 5px 14px;
+    border-radius: 14px; border: 0.5px solid var(--teal);
+    background: rgba(2,195,154,0.15); color: var(--teal);
+  }
+  .sc-toggle.off {
+    border-color: rgba(224,122,95,0.5);
+    background: rgba(224,122,95,0.12); color: var(--coral);
+  }
+  #vol-slider {
+    flex: 1; min-width: 0; height: 4px;
+    accent-color: var(--teal);
+  }
+  .sc-val {
+    flex: 0 0 42px; text-align: right;
+    font-size: 12px; color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .sc-test {
+    width: 100%; margin-top: 8px;
+    font-size: 12px; font-weight: 600; padding: 8px;
+    border-radius: 9px; border: 0.5px solid var(--line);
+    background: rgba(255,255,255,0.06); color: var(--text);
+  }
+  #sound-ctl.is-muted #vol-slider,
+  #sound-ctl.is-muted .sc-val,
+  #sound-ctl.is-muted .sc-test { opacity: 0.4; pointer-events: none; }
+  .sc-note { font-size: 10.5px; color: var(--muted); margin-top: 8px; line-height: 1.5; }
 
   /* 디버그 오버레이 */
   #debug {
@@ -271,6 +315,7 @@
     <div class="dot" id="status-dot"></div>
     <span id="status-text">대기 중</span>
     <span id="rec-timer">● 00:00</span>
+    <button id="sound-btn" aria-label="음성 안내 켜기/끄기">🔊</button>
     <button id="guide-btn" aria-label="인식 가능한 행동 목록">목록</button>
   </div>
 
@@ -285,9 +330,26 @@
   <div id="guide" class="hidden">
     <div id="guide-inner">
       <div id="guide-head">
-        <span>인식 가능한 행동</span>
+        <span>설정 · 인식 가능한 행동</span>
         <button id="guide-close" aria-label="닫기">✕</button>
       </div>
+
+      <!-- 음성 안내 소리 조절 -->
+      <div id="sound-ctl">
+        <div class="sc-row">
+          <span class="sc-label">음성 안내</span>
+          <button id="sound-toggle" class="sc-toggle">켜짐</button>
+        </div>
+        <div class="sc-row">
+          <span class="sc-label">음량</span>
+          <input id="vol-slider" type="range" min="0" max="100" value="100"
+                 aria-label="음성 안내 음량" />
+          <span id="vol-val" class="sc-val">100%</span>
+        </div>
+        <button id="sound-test" class="sc-test">소리 테스트</button>
+        <p class="sc-note">소리 크기는 휴대폰 측면의 볼륨 버튼으로 조절하세요. 앱 실행 중에는 볼륨 버튼이 안내 음성에 연동됩니다. 위 슬라이더는 추가 미세조정용입니다.</p>
+      </div>
+
       <p id="guide-note">아래 행동을 카메라에 또렷하게 비추면 인식됩니다.</p>
       <div id="guide-list"></div>
     </div>
@@ -341,6 +403,8 @@ var App = {
   recognition: null,
   listening: false,
   speaking: false,        // TTS 발화 중 여부
+  muted: false,           // 음성 안내 음소거 여부
+  volume: 1.0,            // 음성 안내 음량 (0.0 ~ 1.0)
   sttSupported: false,    // STT 지원 브라우저 여부
   sttRunning: false,      // STT 실행 중 여부
   sttHeard: ""            // 마지막으로 알아들은 말
@@ -405,6 +469,66 @@ function loadCatalog() {
 
 document.getElementById("guide-btn").onclick = openGuide;
 document.getElementById("guide-close").onclick = closeGuide;
+
+/* ---- 소리 조절 ---- */
+var $soundBtn = document.getElementById("sound-btn");
+var $soundToggle = document.getElementById("sound-toggle");
+var $soundCtl = document.getElementById("sound-ctl");
+var $volSlider = document.getElementById("vol-slider");
+var $volVal = document.getElementById("vol-val");
+
+/* 음소거 상태를 UI 전체에 반영 */
+function applySoundState() {
+  // topbar 아이콘
+  $soundBtn.textContent = App.muted ? "🔇" : "🔊";
+  $soundBtn.classList.toggle("muted", App.muted);
+  // 가이드 시트 토글 버튼
+  $soundToggle.textContent = App.muted ? "꺼짐" : "켜짐";
+  $soundToggle.classList.toggle("off", App.muted);
+  // 음소거 시 음량 슬라이더 흐리게
+  $soundCtl.classList.toggle("is-muted", App.muted);
+  // 슬라이더 값
+  var pct = Math.round(App.volume * 100);
+  $volSlider.value = pct;
+  $volVal.textContent = pct + "%";
+}
+
+function setMuted(muted) {
+  App.muted = muted;
+  if (muted && "speechSynthesis" in window) {
+    window.speechSynthesis.cancel();   // 말하던 중이면 즉시 중단
+    App.speaking = false;
+  }
+  applySoundState();
+}
+
+/* topbar 아이콘 — 빠른 음소거 토글 */
+$soundBtn.onclick = function () { setMuted(!App.muted); };
+
+/* 가이드 시트 토글 버튼 */
+$soundToggle.onclick = function () { setMuted(!App.muted); };
+
+/* 음량 슬라이더 */
+$volSlider.oninput = function () {
+  App.volume = parseInt($volSlider.value, 10) / 100;
+  $volVal.textContent = $volSlider.value + "%";
+  // 음량을 0 으로 내리면 자동 음소거, 0보다 크면 해제
+  if (App.volume === 0 && !App.muted) {
+    setMuted(true);
+  } else if (App.volume > 0 && App.muted) {
+    setMuted(false);
+  }
+};
+
+/* 소리 테스트 버튼 */
+document.getElementById("sound-test").onclick = function () {
+  if (App.muted) {
+    setMuted(false);   // 음소거 상태면 먼저 해제하고 들려줌
+  }
+  speak("음성 안내 소리 테스트입니다. 이 정도 크기로 들립니다.");
+};
+
+applySoundState();   // 초기 상태 반영
 
 /* ============================================================
    1. 태스크 분류 — 실제 백엔드(Gemini) 호출
@@ -486,18 +610,77 @@ function captureFrame() {
 }
 
 /* ============================================================
+   4-0. 미디어 세션 키퍼
+   ------------------------------------------------------------
+   안드로이드 크롬에서 볼륨 버튼은 페이지가 미디어를 재생 중이 아니면
+   '벨소리' 채널을 조절한다. SpeechSynthesis 음성은 '미디어' 채널로
+   나오므로 둘이 따로 논다.
+   해결: 들리지 않는 무음 오디오를 계속 루프 재생해 페이지를
+   '미디어 재생 중' 상태로 만들면, 볼륨 버튼이 미디어 채널로
+   전환되어 안내 음성에도 적용된다.
+   주의: 자동재생 정책상 사용자의 첫 터치(시작 버튼) 시점에 켜야 한다.
+   ============================================================ */
+var SilentKeeper = (function () {
+  var ctx = null, src = null, gain = null, started = false;
+
+  function start() {
+    if (started) return;
+    try {
+      var AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      ctx = new AC();
+      // 1초짜리 무음 버퍼를 만들어 무한 루프
+      var buf = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate);
+      src = ctx.createBufferSource();
+      src.buffer = buf;
+      src.loop = true;
+      // 완전 0 이면 일부 브라우저가 '재생 안 함'으로 취급 → 극소값
+      gain = ctx.createGain();
+      gain.gain.value = 0.0001;
+      src.connect(gain);
+      gain.connect(ctx.destination);
+      src.start(0);
+      started = true;
+    } catch (e) {
+      // 실패해도 앱 동작에는 지장 없음 — 볼륨 버튼 연동만 안 될 뿐
+    }
+  }
+
+  // 탭 전환 후 돌아오면 컨텍스트가 멈출 수 있어 깨워줌
+  function resume() {
+    if (ctx && ctx.state === "suspended") {
+      ctx.resume().catch(function () {});
+    }
+  }
+
+  return { start: start, resume: resume };
+})();
+
+document.addEventListener("visibilitychange", function () {
+  if (!document.hidden) SilentKeeper.resume();
+});
+
+/* ============================================================
    4. 음성 출력 (TTS)
+   ------------------------------------------------------------
+   App.muted    : true 면 음성 안내를 내지 않음 (콜백은 정상 진행)
+   App.volume   : 0.0 ~ 1.0 음량
    ============================================================ */
 function speak(text, onEnd) {
-  if (!("speechSynthesis" in window)) {
+  // 음소거 상태거나 TTS 미지원이면 — 소리는 건너뛰되 흐름(콜백)은 그대로
+  if (App.muted || !("speechSynthesis" in window)) {
     App.speaking = false;
-    if (onEnd) onEnd();
+    if (onEnd) {
+      // 음소거여도 안내 시간만큼 살짝 텀을 줘 흐름이 자연스럽게
+      setTimeout(onEnd, App.muted ? 200 : 0);
+    }
     return;
   }
   window.speechSynthesis.cancel();
   var u = new SpeechSynthesisUtterance(text);
   u.lang = "ko-KR";
   u.rate = 1.05;
+  u.volume = (typeof App.volume === "number") ? App.volume : 1.0;
   App.speaking = true;
   var done = false;
   function finish() {
@@ -876,6 +1059,9 @@ function enterDone(durSec) {
    ============================================================ */
 document.getElementById("gate-start").onclick = async function () {
   $gateErr.textContent = "";
+  // 사용자의 첫 터치 — 이 시점에 무음 키퍼를 켜야 볼륨 버튼이
+  // 미디어 채널로 묶인다 (자동재생 정책상 제스처 안에서만 가능).
+  SilentKeeper.start();
   var ok = await startCamera();
   if (!ok) return;
   App.recognition = setupRecognition();
